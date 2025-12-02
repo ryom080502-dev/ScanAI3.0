@@ -20,7 +20,7 @@ TEMPLATE_FILE = "template.xlsx"
 LOGIN_PASSWORD = "fujishima8888" 
 
 # --- ページ設定 ---
-st.set_page_config(page_title="経費精算AI (Ver.3.1 高速代対応)", layout="wide")
+st.set_page_config(page_title="経費精算AI (Ver.3.2 駐車場固定)", layout="wide")
 
 # ▼▼▼ CSSスタイル ▼▼▼
 st.markdown("""
@@ -57,13 +57,12 @@ def smart_write(ws, row, col, value):
                 return
     else: cell.value = value
 
-# --- ▼▼▼ 集計・分類ロジック（高速代を追加） ▼▼▼ ---
+# --- 集計・分類ロジック ---
 def aggregate_receipt_data(raw_data):
     """
     データを「交通費」「駐車場」「高速代」「一般」の4つに分類して集計する
     """
     df = pd.DataFrame(raw_data)
-    # データが空の場合の初期化
     if df.empty: 
         return {"transport": None, "parking": None, "highway": None, "general": []}
 
@@ -73,13 +72,13 @@ def aggregate_receipt_data(raw_data):
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
     result_dict = {
-        "transport": None, # 9行目用 (電車・バス)
-        "parking": None,   # 10行目用 (駐車場)
-        "highway": None,   # 11行目以降の先頭 (高速代)
-        "general": []      # 11行目以降 (その他)
+        "transport": None, # 9行目用
+        "parking": None,   # 10行目用
+        "highway": None,   # 11行目以降の先頭
+        "general": []      # 11行目以降
     }
 
-    # --- 1. 交通費 (transport: 電車・バス) ---
+    # --- 1. 交通費 (transport) ---
     df_trans = df[df['category'] == 'transport']
     if not df_trans.empty:
         total = df_trans['total_amount'].sum()
@@ -124,12 +123,10 @@ def aggregate_receipt_data(raw_data):
             "amount_8_percent": total_8
         }
 
-    # --- 4. 一般 (general) の集計と名寄せ ---
-    # 上記のいずれでもないデータを抽出
+    # --- 4. 一般 (general) ---
     df_gen = df[~df['category'].isin(['transport', 'parking', 'highway'])]
     
     if not df_gen.empty:
-        # 店舗名でグループ化して集計（名寄せ）
         grouped = df_gen.groupby('store_name').agg({
             'date': 'max',
             'total_amount': 'sum',
@@ -147,7 +144,6 @@ def aggregate_receipt_data(raw_data):
                 "amount_8_percent": row['amount_8_percent']
             })
         
-        # 日付順ソート
         general_list.sort(key=lambda x: x.get("date") if x.get("date") else "9999/99/99")
         result_dict["general"] = general_list
 
@@ -162,7 +158,7 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
 
     genai.configure(api_key=api_key_to_use)
     
-    # ▼▼▼ プロンプト: 高速代カテゴリを追加し、交通費を厳格化 ▼▼▼
+    # ▼▼▼ プロンプト ▼▼▼
     model = genai.GenerativeModel(
         model_name=MODEL_NAME,
         generation_config={"temperature": 0, "response_mime_type": "application/json"},
@@ -170,28 +166,25 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
         あなたは最高レベルの精度を持つ経理担当AIです。
         アップロードされたPDF（複数枚のレシート画像）から情報を抽出し、JSONデータを作成してください。
         
-        ### 1. 店舗名の正規化 (store_name)
+        ### 1. 店舗名の正規化
         - 支店名は削除し、会社名のみ抽出（例: "島忠 〇〇店" → "島忠"）。
         
-        ### 2. カテゴリ判定 (category) - 以下の優先順位で判定してください
+        ### 2. カテゴリ判定 (優先順位順)
         
-        **優先度A: 公共交通機関 (transport)**
-        - **対象:** 電車、バス、地下鉄、モノレールのみ。
-        - **キーワード:** 「乗車券」「切符」「運賃」「チャージ」「Suica」「PASMO」「JR」「駅」「交通局」「バス」。
-        - ※高速道路やタクシーは含めないこと。
+        **A. 公共交通機関 (transport)**
+        - 電車、バス、地下鉄、モノレールのみ。
+        - キーワード: 「乗車券」「切符」「運賃」「チャージ」「Suica」「PASMO」「JR」「駅」「交通局」「バス」。
+        - (高速道路やタクシーは含めない)
         
-        **優先度B: 高速道路 (highway)**
-        - **対象:** 高速道路の利用料金。
-        - **キーワード:** 「ETC」「高速」「料金所」「通行料」「有料道路」「Highway」「首都高」。
-        - 該当する場合、`highway` と判定してください。
+        **B. 高速道路 (highway)**
+        - キーワード: 「ETC」「高速」「料金所」「通行料」「有料道路」「Highway」「首都高」。
         
-        **優先度C: 駐車場 (parking)**
-        - **対象:** 駐車料金。
-        - **キーワード:** 「駐車場」「パーキング」「Parking」「Ｐ」「コインパーキング」。
-        - **文脈:** 店名が不明でも「入庫」「出庫」「駐車時間」の記載があれば `parking` と判定。
+        **C. 駐車場 (parking)**
+        - キーワード: 「駐車場」「パーキング」「Parking」「Ｐ」「コインパーキング」。
+        - 文脈: 「入庫」「出庫」「駐車時間」の記載があれば店名に関わらずparkingと判定。
         
-        **優先度D: その他 (general)**
-        - 上記以外（飲食、物品購入、タクシーなど）は `general` と判定。
+        **D. その他 (general)**
+        - 上記以外は `general`。
 
         ### 3. 金額とインボイス
         - **date:** YYYY/MM/DD。
@@ -199,7 +192,7 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
         - **amount_8_percent:** 「8%対象」等の記載がある金額。なければ 0。
         - **invoice_number:** T+13桁。なければ null。
         
-        ### 出力フォーマット (JSON List)
+        ### 出力フォーマット
         [{"status": "success", "date": "YYYY/MM/DD", "store_name": "...", "category": "general", "invoice_number": "T...", "total_amount": 1000, "amount_8_percent": 0}]
         """
     )
@@ -210,7 +203,7 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
 
         sample_file = genai.upload_file(path=temp_pdf_path, display_name="User Upload PDF")
         
-        with st.spinner(f' Gemini {MODEL_NAME} で解析中... (電車・バス / 高速代 / 駐車場 を自動分類)'):
+        with st.spinner(f' Gemini {MODEL_NAME} で解析中...'):
             while sample_file.state.name == "PROCESSING":
                 time.sleep(1)
                 sample_file = genai.get_file(sample_file.name)
@@ -220,19 +213,24 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
             response = model.generate_content([sample_file, "全ページのレシート情報を抽出してください。"])
             raw_data = json.loads(response.text)
 
-        # データの集計・分類
         analyzed_data = aggregate_receipt_data(raw_data)
 
-        # Excel書き込み
         wb = openpyxl.load_workbook(template_path)
         ws = wb.active 
         
-        # --- 書き込み用ヘルパー関数 ---
-        def write_row(row_idx, item_data):
+        # --- 書き込み用ヘルパー関数 (修正版) ---
+        def write_row(row_idx, item_data, skip_basic_info=False):
+            """
+            skip_basic_info=True の場合、日付と店名の書き込みをスキップする（金額のみ書く）
+            """
             if not item_data: return
-            if item_data.get("date"): smart_write(ws, row_idx, 2, item_data["date"])
-            if item_data.get("store_name"): smart_write(ws, row_idx, 5, item_data["store_name"])
             
+            # 日付・店名の書き込み制御
+            if not skip_basic_info:
+                if item_data.get("date"): smart_write(ws, row_idx, 2, item_data["date"])
+                if item_data.get("store_name"): smart_write(ws, row_idx, 5, item_data["store_name"])
+            
+            # 金額は常に書き込む
             total = item_data.get("total_amount", 0)
             amt_8 = item_data.get("amount_8_percent", 0)
             amt_10_target = total - amt_8
@@ -240,37 +238,31 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
             if amt_8 > 0: smart_write(ws, row_idx, 16, amt_8)
             if amt_10_target > 0: smart_write(ws, row_idx, 19, amt_10_target)
 
-        # ▼▼▼ 書き込み位置の制御 ▼▼▼
+        # ▼▼▼ 書き込み処理 ▼▼▼
         
-        # 1. 公共機関 (9行目固定)
+        # 1. 公共機関 (9行目)
         if analyzed_data["transport"]:
             write_row(9, analyzed_data["transport"])
             
-        # 2. 駐車場 (10行目固定)
+        # 2. 駐車場 (10行目) -> 日付・店名はテンプレートのものを使うため書き込まない
         if analyzed_data["parking"]:
-            write_row(10, analyzed_data["parking"])
+            write_row(10, analyzed_data["parking"], skip_basic_info=True)
 
-        # 3. 11行目以降のリスト作成
-        # 「高速代」がある場合、リストの先頭に追加する
+        # 3. 高速代と一般 (11行目以降)
         items_to_write = []
         if analyzed_data["highway"]:
             items_to_write.append(analyzed_data["highway"])
-        
         items_to_write.extend(analyzed_data["general"])
 
-        # 4. ループ書き込み (11行目からスタート)
         current_row = 11
         for item in items_to_write:
-            # ページ跨ぎ処理: 30行目を超えたら41行目へジャンプ
             if current_row >= 30 and current_row < 41:
                 current_row = 41
-            
             write_row(current_row, item)
             current_row += 1
 
         wb.save(output_excel_path)
         
-        # 結果表示用にリストを作成
         display_list = []
         if analyzed_data["transport"]: display_list.append(analyzed_data["transport"])
         if analyzed_data["parking"]: display_list.append(analyzed_data["parking"])
@@ -285,7 +277,7 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
 
 # --- UI実装 ---
 if check_password():
-    st.title("🧾 経費精算 AI (Ver.3.1 高速代対応)")
+    st.title("🧾 経費精算 AI (Ver.3.2 駐車場固定)")
     st.caption(f"Powered by {MODEL_NAME}")
     st.markdown("---")
     
@@ -299,7 +291,7 @@ if check_password():
             st.markdown("""
             **出力ルール:**
             - **09行目:** 交通費 (電車/バス)
-            - **10行目:** 駐車場代
+            - **10行目:** 駐車場代 (金額のみ出力・日付等は既存維持)
             - **11行目:** 高速代 (あれば先頭)
             - **11行目~:** その他 (店舗ごと)
             """)
@@ -325,12 +317,11 @@ if check_password():
             df = pd.DataFrame(data)
             df["val_10"] = df["total_amount"] - df["amount_8_percent"]
             
-            # アイコン表示 (高速代を追加)
             def get_icon(cat_name):
                 s = str(cat_name)
                 if "交通費" in s: return "🚆"
                 if "駐車場" in s: return "🅿️"
-                if "高速代" in s: return "🛣️" # Highway icon
+                if "高速代" in s: return "🛣️"
                 return "🛒"
 
             df["Type"] = df["store_name"].apply(get_icon)
