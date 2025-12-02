@@ -12,16 +12,15 @@ from dotenv import load_dotenv
 load_dotenv()
 API_KEY = os.getenv("GOOGLE_API_KEY")
 
-# ▼▼▼ モデル変更: gemini-2.5-pro を指定 ▼▼▼
+# ▼▼▼ モデル指定 ▼▼▼
 MODEL_NAME = "gemini-2.5-pro"
 TEMPLATE_FILE = "template.xlsx"
 
 # ▼▼▼ 合言葉の設定 ▼▼▼
 LOGIN_PASSWORD = "fujishima8888" 
-# ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
 # --- ページ設定 ---
-st.set_page_config(page_title="経費精算AI (Ver.2.5 Pro)", layout="wide")
+st.set_page_config(page_title="経費精算AI (Ver.3.1 高速代対応)", layout="wide")
 
 # ▼▼▼ CSSスタイル ▼▼▼
 st.markdown("""
@@ -58,13 +57,15 @@ def smart_write(ws, row, col, value):
                 return
     else: cell.value = value
 
-# --- ▼▼▼ 集計・分類ロジック ▼▼▼ ---
+# --- ▼▼▼ 集計・分類ロジック（高速代を追加） ▼▼▼ ---
 def aggregate_receipt_data(raw_data):
     """
-    データを「交通費」「駐車場」「一般」の3つに分類して集計する
+    データを「交通費」「駐車場」「高速代」「一般」の4つに分類して集計する
     """
     df = pd.DataFrame(raw_data)
-    if df.empty: return {"transport": None, "parking": None, "general": []}
+    # データが空の場合の初期化
+    if df.empty: 
+        return {"transport": None, "parking": None, "highway": None, "general": []}
 
     # 数値変換
     cols_to_num = ['total_amount', 'amount_8_percent']
@@ -72,12 +73,13 @@ def aggregate_receipt_data(raw_data):
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
     result_dict = {
-        "transport": None, # 9行目用
-        "parking": None,   # 10行目用
-        "general": []      # 11行目以降用
+        "transport": None, # 9行目用 (電車・バス)
+        "parking": None,   # 10行目用 (駐車場)
+        "highway": None,   # 11行目以降の先頭 (高速代)
+        "general": []      # 11行目以降 (その他)
     }
 
-    # --- 1. 交通費 (transport) の集計 ---
+    # --- 1. 交通費 (transport: 電車・バス) ---
     df_trans = df[df['category'] == 'transport']
     if not df_trans.empty:
         total = df_trans['total_amount'].sum()
@@ -92,7 +94,7 @@ def aggregate_receipt_data(raw_data):
             "amount_8_percent": total_8
         }
 
-    # --- 2. 駐車場 (parking) の集計 ---
+    # --- 2. 駐車場 (parking) ---
     df_park = df[df['category'] == 'parking']
     if not df_park.empty:
         total = df_park['total_amount'].sum()
@@ -107,8 +109,24 @@ def aggregate_receipt_data(raw_data):
             "amount_8_percent": total_8
         }
 
-    # --- 3. 一般 (general) の集計と名寄せ ---
-    df_gen = df[(df['category'] != 'transport') & (df['category'] != 'parking')]
+    # --- 3. 高速代 (highway) ---
+    df_high = df[df['category'] == 'highway']
+    if not df_high.empty:
+        total = df_high['total_amount'].sum()
+        total_8 = df_high['amount_8_percent'].sum()
+        latest_date = df_high['date'].max()
+        
+        result_dict["highway"] = {
+            "date": latest_date,
+            "store_name": "高速代",
+            "invoice_number": "", 
+            "total_amount": total,
+            "amount_8_percent": total_8
+        }
+
+    # --- 4. 一般 (general) の集計と名寄せ ---
+    # 上記のいずれでもないデータを抽出
+    df_gen = df[~df['category'].isin(['transport', 'parking', 'highway'])]
     
     if not df_gen.empty:
         # 店舗名でグループ化して集計（名寄せ）
@@ -144,40 +162,42 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
 
     genai.configure(api_key=api_key_to_use)
     
-    # ▼▼▼ プロンプト: Gemini 2.5 Pro 向けに最適化 ▼▼▼
+    # ▼▼▼ プロンプト: 高速代カテゴリを追加し、交通費を厳格化 ▼▼▼
     model = genai.GenerativeModel(
         model_name=MODEL_NAME,
         generation_config={"temperature": 0, "response_mime_type": "application/json"},
         system_instruction="""
         あなたは最高レベルの精度を持つ経理担当AIです。
         アップロードされたPDF（複数枚のレシート画像）から情報を抽出し、JSONデータを作成してください。
-        Gemini 2.5 Proの高度な視覚認識能力を活用し、かすれた文字や文脈からも正確に情報を読み取ってください。
         
         ### 1. 店舗名の正規化 (store_name)
-        - 支店名は削除し、会社名のみ抽出してください（例: "島忠 〇〇店" → "島忠"）。
-        - 駐車場で店名がない場合、無理に推測せず空白または「駐車場」としてください。
+        - 支店名は削除し、会社名のみ抽出（例: "島忠 〇〇店" → "島忠"）。
         
-        ### 2. カテゴリ判定 (category) - 重要
-        以下の優先順位でカテゴリを決定してください。
+        ### 2. カテゴリ判定 (category) - 以下の優先順位で判定してください
         
         **優先度A: 公共交通機関 (transport)**
-        - キーワード: 「駅」「切符」「乗車券」「運賃」「チャージ」「Suica」「PASMO」「JR」「地下鉄」「バス」「交通局」。
-        - 該当する場合、必ず `transport` と判定。
+        - **対象:** 電車、バス、地下鉄、モノレールのみ。
+        - **キーワード:** 「乗車券」「切符」「運賃」「チャージ」「Suica」「PASMO」「JR」「駅」「交通局」「バス」。
+        - ※高速道路やタクシーは含めないこと。
         
-        **優先度B: 駐車場 (parking)**
-        - キーワード: 「駐車場」「パーキング」「Parking」「Ｐ」「コインパーキング」。
-        - **文脈判定:** 店名に「駐車場」がなくても、以下の情報があれば `parking` と判定してください。
-          - 「入庫」「出庫」「入庫時刻」「精算時刻」「駐車時間」「No.（車室番号）」の記載がある。
-          - 「駐車料金」「一時利用」などの品目がある。
+        **優先度B: 高速道路 (highway)**
+        - **対象:** 高速道路の利用料金。
+        - **キーワード:** 「ETC」「高速」「料金所」「通行料」「有料道路」「Highway」「首都高」。
+        - 該当する場合、`highway` と判定してください。
         
-        **優先度C: その他 (general)**
-        - 上記以外（飲食、物品購入など）は `general` と判定。
+        **優先度C: 駐車場 (parking)**
+        - **対象:** 駐車料金。
+        - **キーワード:** 「駐車場」「パーキング」「Parking」「Ｐ」「コインパーキング」。
+        - **文脈:** 店名が不明でも「入庫」「出庫」「駐車時間」の記載があれば `parking` と判定。
+        
+        **優先度D: その他 (general)**
+        - 上記以外（飲食、物品購入、タクシーなど）は `general` と判定。
 
         ### 3. 金額とインボイス
-        - **date:** YYYY/MM/DD 形式。
-        - **invoice_number:** Tから始まる13桁の番号。なければ null。
+        - **date:** YYYY/MM/DD。
         - **total_amount:** 支払総額（税込）。
-        - **amount_8_percent:** 「8%対象」「軽減税率」と明記されている金額のみ抽出。なければ 0。
+        - **amount_8_percent:** 「8%対象」等の記載がある金額。なければ 0。
+        - **invoice_number:** T+13桁。なければ null。
         
         ### 出力フォーマット (JSON List)
         [{"status": "success", "date": "YYYY/MM/DD", "store_name": "...", "category": "general", "invoice_number": "T...", "total_amount": 1000, "amount_8_percent": 0}]
@@ -190,17 +210,13 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
 
         sample_file = genai.upload_file(path=temp_pdf_path, display_name="User Upload PDF")
         
-        with st.spinner(f' Gemini {MODEL_NAME} で超高精度解析中... (交通費・駐車場・その他を自動分類)'):
-            # ファイル処理待ち
+        with st.spinner(f' Gemini {MODEL_NAME} で解析中... (電車・バス / 高速代 / 駐車場 を自動分類)'):
             while sample_file.state.name == "PROCESSING":
                 time.sleep(1)
                 sample_file = genai.get_file(sample_file.name)
             
-            if sample_file.state.name == "FAILED":
-                st.error("Google側でのファイル処理に失敗しました")
-                return None
+            if sample_file.state.name == "FAILED": return None
 
-            # 解析実行
             response = model.generate_content([sample_file, "全ページのレシート情報を抽出してください。"])
             raw_data = json.loads(response.text)
 
@@ -221,9 +237,7 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
             amt_8 = item_data.get("amount_8_percent", 0)
             amt_10_target = total - amt_8
 
-            # 8%欄 (P列: 16列目)
             if amt_8 > 0: smart_write(ws, row_idx, 16, amt_8)
-            # 10%欄 (S列: 19列目) - インボイス有無に関わらず基本ここへ
             if amt_10_target > 0: smart_write(ws, row_idx, 19, amt_10_target)
 
         # ▼▼▼ 書き込み位置の制御 ▼▼▼
@@ -236,10 +250,18 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
         if analyzed_data["parking"]:
             write_row(10, analyzed_data["parking"])
 
-        # 3. その他 (11行目以降)
+        # 3. 11行目以降のリスト作成
+        # 「高速代」がある場合、リストの先頭に追加する
+        items_to_write = []
+        if analyzed_data["highway"]:
+            items_to_write.append(analyzed_data["highway"])
+        
+        items_to_write.extend(analyzed_data["general"])
+
+        # 4. ループ書き込み (11行目からスタート)
         current_row = 11
-        for item in analyzed_data["general"]:
-            # ページ跨ぎ処理: 30行目を超えたら41行目へジャンプ (テンプレート依存)
+        for item in items_to_write:
+            # ページ跨ぎ処理: 30行目を超えたら41行目へジャンプ
             if current_row >= 30 and current_row < 41:
                 current_row = 41
             
@@ -248,10 +270,11 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
 
         wb.save(output_excel_path)
         
-        # 結果表示用にリストをフラットにして返す
+        # 結果表示用にリストを作成
         display_list = []
         if analyzed_data["transport"]: display_list.append(analyzed_data["transport"])
         if analyzed_data["parking"]: display_list.append(analyzed_data["parking"])
+        if analyzed_data["highway"]: display_list.append(analyzed_data["highway"])
         display_list.extend(analyzed_data["general"])
         
         return display_list
@@ -262,7 +285,7 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
 
 # --- UI実装 ---
 if check_password():
-    st.title("🧾 経費精算 AI (Ver.2.5 Pro)")
+    st.title("🧾 経費精算 AI (Ver.3.1 高速代対応)")
     st.caption(f"Powered by {MODEL_NAME}")
     st.markdown("---")
     
@@ -275,9 +298,10 @@ if check_password():
             st.success("準備完了")
             st.markdown("""
             **出力ルール:**
-            - **9行目:** 交通費 (電車/バス) 合計
-            - **10行目:** 駐車場代 合計 (入出庫時間で自動判定)
-            - **11行目~:** 店舗ごとの明細 (自動名寄せ)
+            - **09行目:** 交通費 (電車/バス)
+            - **10行目:** 駐車場代
+            - **11行目:** 高速代 (あれば先頭)
+            - **11行目~:** その他 (店舗ごと)
             """)
             if st.button("読み取り開始", type="primary", use_container_width=True):
                 if os.path.exists(TEMPLATE_FILE):
@@ -301,13 +325,14 @@ if check_password():
             df = pd.DataFrame(data)
             df["val_10"] = df["total_amount"] - df["amount_8_percent"]
             
-            # アイコン表示
+            # アイコン表示 (高速代を追加)
             def get_icon(cat_name):
-                if "交通費" in str(cat_name): return "🚆"
-                if "駐車場" in str(cat_name): return "🅿️"
+                s = str(cat_name)
+                if "交通費" in s: return "🚆"
+                if "駐車場" in s: return "🅿️"
+                if "高速代" in s: return "🛣️" # Highway icon
                 return "🛒"
 
-            # 表示用に store_name からアイコンを判定 (集計後は store_name にカテゴリ名が入っているため)
             df["Type"] = df["store_name"].apply(get_icon)
             
             st.dataframe(
