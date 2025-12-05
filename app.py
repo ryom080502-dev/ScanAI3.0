@@ -20,7 +20,7 @@ TEMPLATE_FILE = "template.xlsx"
 LOGIN_PASSWORD = "fujishima8888" 
 
 # --- ページ設定 ---
-st.set_page_config(page_title="経費精算AI (Ver.3.2 駐車場固定)", layout="wide")
+st.set_page_config(page_title="経費精算AI (Ver.3.3 固定行対応)", layout="wide")
 
 # ▼▼▼ CSSスタイル ▼▼▼
 st.markdown("""
@@ -218,7 +218,7 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
         wb = openpyxl.load_workbook(template_path)
         ws = wb.active 
         
-        # --- 書き込み用ヘルパー関数 (修正版) ---
+        # --- 書き込み用ヘルパー関数 ---
         def write_row(row_idx, item_data, skip_basic_info=False):
             """
             skip_basic_info=True の場合、日付と店名の書き込みをスキップする（金額のみ書く）
@@ -240,11 +240,11 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
 
         # ▼▼▼ 書き込み処理 ▼▼▼
         
-        # 1. 公共機関 (9行目)
+        # 1. 公共機関 (9行目) -> 修正: skip_basic_info=True に設定
         if analyzed_data["transport"]:
-            write_row(9, analyzed_data["transport"])
+            write_row(9, analyzed_data["transport"], skip_basic_info=True)
             
-        # 2. 駐車場 (10行目) -> 日付・店名はテンプレートのものを使うため書き込まない
+        # 2. 駐車場 (10行目) -> skip_basic_info=True (維持)
         if analyzed_data["parking"]:
             write_row(10, analyzed_data["parking"], skip_basic_info=True)
 
@@ -277,7 +277,7 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
 
 # --- UI実装 ---
 if check_password():
-    st.title("🧾 経費精算 AI (Ver.3.2 駐車場固定)")
+    st.title("🧾 経費精算 AI (Ver.3.3 固定行対応)")
     st.caption(f"Powered by {MODEL_NAME}")
     st.markdown("---")
     
@@ -290,8 +290,8 @@ if check_password():
             st.success("準備完了")
             st.markdown("""
             **出力ルール:**
-            - **09行目:** 交通費 (電車/バス)
-            - **10行目:** 駐車場代 (金額のみ出力・日付等は既存維持)
+            - **09行目:** 交通費 (金額のみ出力・日付等は維持)
+            - **10行目:** 駐車場代 (金額のみ出力・日付等は維持)
             - **11行目:** 高速代 (あれば先頭)
             - **11行目~:** その他 (店舗ごと)
             """)
