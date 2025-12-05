@@ -20,7 +20,7 @@ TEMPLATE_FILE = "template.xlsx"
 LOGIN_PASSWORD = "fujishima8888" 
 
 # --- ページ設定 ---
-st.set_page_config(page_title="経費精算AI (Ver.3.3 固定行対応)", layout="wide")
+st.set_page_config(page_title="経費精算スキャンAI", layout="wide")
 
 # ▼▼▼ CSSスタイル ▼▼▼
 st.markdown("""
@@ -203,7 +203,7 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
 
         sample_file = genai.upload_file(path=temp_pdf_path, display_name="User Upload PDF")
         
-        with st.spinner(f' Gemini {MODEL_NAME} で解析中...'):
+        with st.spinner(f'読み取り中...'):
             while sample_file.state.name == "PROCESSING":
                 time.sleep(1)
                 sample_file = genai.get_file(sample_file.name)
@@ -277,7 +277,7 @@ def analyze_and_create_excel(uploaded_file, template_path, output_excel_path):
 
 # --- UI実装 ---
 if check_password():
-    st.title("🧾 経費精算 AI (Ver.3.3 固定行対応)")
+    st.title("🧾 経費精算スキャンAI ")
     st.caption(f"Powered by {MODEL_NAME}")
     st.markdown("---")
     
