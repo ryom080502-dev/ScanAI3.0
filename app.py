@@ -13,7 +13,7 @@ load_dotenv()
 API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # ▼▼▼ モデル指定 ▼▼▼
-MODEL_NAME = "gemini-2.5-pro"
+MODEL_NAME = "gemini-3-pro-preview"
 TEMPLATE_FILE = "template.xlsx"
 
 # ▼▼▼ 合言葉の設定 ▼▼▼
